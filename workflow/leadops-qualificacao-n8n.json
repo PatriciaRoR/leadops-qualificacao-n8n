@@ -1,0 +1,622 @@
+{
+  "name": "LeadOps - Qualificação Inteligente de Leads com SQL",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        928
+      ],
+      "id": "33895eef-58ee-4a16-8de4-bf260d83efa8",
+      "name": "Setup Banco"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "CREATE TABLE IF NOT EXISTS leads (\n    id BIGSERIAL PRIMARY KEY,\n    nome VARCHAR(120) NOT NULL,\n    email VARCHAR(180) NOT NULL UNIQUE,\n    empresa VARCHAR(180),\n    porte VARCHAR(30),\n    orcamento VARCHAR(30),\n    prazo_declarado VARCHAR(60),\n    mensagem_original TEXT,\n    intencao VARCHAR(40),\n    servico_interesse VARCHAR(80),\n    sentimento VARCHAR(20),\n    resumo_ia TEXT,\n    score INTEGER NOT NULL DEFAULT 0,\n    classificacao VARCHAR(20) NOT NULL DEFAULT 'FRIO',\n    status VARCHAR(30) NOT NULL DEFAULT 'novo',\n    criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n    atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS interacoes (\n    id BIGSERIAL PRIMARY KEY,\n    lead_id BIGINT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,\n    mensagem TEXT NOT NULL,\n    resumo_ia TEXT,\n    score INTEGER,\n    classificacao VARCHAR(20),\n    criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS logs_automacao (\n    id BIGSERIAL PRIMARY KEY,\n    processo VARCHAR(100) NOT NULL,\n    status VARCHAR(30) NOT NULL,\n    detalhes TEXT,\n    criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE INDEX IF NOT EXISTS idx_leads_classificacao ON leads(classificacao);\nCREATE INDEX IF NOT EXISTS idx_leads_criado_em ON leads(criado_em);\nCREATE INDEX IF NOT EXISTS idx_interacoes_lead_id ON interacoes(lead_id);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        208,
+        928
+      ],
+      "id": "3114940c-ccba-4799-8a4a-da0a0e85449e",
+      "name": "Criar Estrutura SQL",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leadops-qualificacao",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -32,
+        512
+      ],
+      "id": "d2ed555e-b08c-487e-92f3-65c50d764cc6",
+      "name": "Receber Lead",
+      "webhookId": "leadops-qualificacao"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const body = $json.body ?? $json;\nconst texto = (v) => (v ?? '').toString().trim();\nconst email = texto(body.email).toLowerCase();\n\nconst lead = {\n  nome: texto(body.nome),\n  email,\n  empresa: texto(body.empresa),\n  porte: texto(body.porte).toLowerCase(),\n  orcamento: texto(body.orcamento).toLowerCase(),\n  prazo: texto(body.prazo).toLowerCase(),\n  mensagem: texto(body.mensagem),\n  origem: texto(body.origem) || 'webhook'\n};\n\nconst erros = [];\nif (!lead.nome) erros.push('nome é obrigatório');\nif (!lead.email) erros.push('email é obrigatório');\nif (lead.email && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(lead.email)) erros.push('email inválido');\nif (!lead.mensagem) erros.push('mensagem é obrigatória');\n\nreturn {\n  json: {\n    ...lead,\n    validacao: erros.length === 0 ? 'OK' : 'ERRO',\n    erros\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        512
+      ],
+      "id": "fc9d8ef6-c4f6-46e2-a7ca-3cfdf5e5abaf",
+      "name": "Normalizar e Validar Lead"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c40159a0-ab2c-4133-a565-6b96a219e416",
+              "leftValue": "={{ $json.validacao }}",
+              "rightValue": "OK",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        448,
+        512
+      ],
+      "id": "0ad77d0e-87a8-429e-a3e4-407d0e89abbb",
+      "name": "Entrada Válida?"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'erro', mensagem: 'Dados inválidos', erros: $json.erros } }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        688,
+        736
+      ],
+      "id": "cbaacf29-ef50-463e-9168-92e49569e1c6",
+      "name": "Responder Erro de Validação"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT CASE WHEN EXISTS(SELECT 1 FROM leads WHERE email = $1) THEN 'SIM' ELSE 'NAO' END AS existe, COALESCE((SELECT id FROM leads WHERE email = $1 LIMIT 1), 0) AS lead_id, COALESCE((SELECT status FROM leads WHERE email = $1 LIMIT 1), 'novo') AS status_atual;",
+        "options": {
+          "queryReplacement": "={{ [ $('Normalizar e Validar Lead').item.json.email ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        688,
+        432
+      ],
+      "id": "a3eabe13-9ec7-4a62-b12b-ad44a0fa0f24",
+      "name": "Verificar Lead no Banco",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Normalizar e Validar Lead').item.json.mensagem }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "Você é um analista de pré-vendas responsável por interpretar mensagens de leads para uma empresa de tecnologia e automação.\n\nSua função é EXCLUSIVAMENTE extrair e estruturar sinais comerciais presentes na mensagem. O score e a classificação final serão calculados por regras determinísticas no n8n.\n\nAnalise somente as informações fornecidas. Não invente orçamento, prazo, tamanho da empresa ou intenção.\n\nINTENÇÃO — escolha UMA:\n- contratacao\n- pesquisa\n- parceria\n- suporte\n- outro\n\nPRAZO INFERIDO — escolha UMA:\n- imediato\n- 30_dias\n- 90_dias\n- sem_prazo\n\nSERVIÇO DE INTERESSE — escolha UMA:\n- automacao\n- inteligencia_artificial\n- integracao_api\n- dados\n- outro\n\nSENTIMENTO — escolha UMA:\n- positivo\n- neutro\n- negativo\n\nRESUMO:\n- máximo de duas frases\n- objetivo e comercialmente útil\n- não invente informações\n\nSINAIS:\nListe de forma curta os sinais presentes no texto que justificam sua interpretação.\n\nA saída deve seguir exatamente o formato estruturado solicitado pelo Output Parser."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        960,
+        432
+      ],
+      "id": "d6adf72c-b282-4e46-9078-60a36a93a758",
+      "name": "Analisar Intenção com IA"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-20b",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        848,
+        688
+      ],
+      "id": "1828bc61-01ba-487b-b4dd-1e2ed4258f92",
+      "name": "Groq - Modelo de IA",
+      "credentials": {
+        "groqApi": {
+          "id": "seu id",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"intencao\": \"contratacao\",\n  \"prazo_inferido\": \"30_dias\",\n  \"servico_interesse\": \"automacao\",\n  \"sentimento\": \"positivo\",\n  \"resumo\": \"Empresa busca automatizar o atendimento e demonstra intenção de contratar no curto prazo.\",\n  \"sinais\": [\n    \"intenção de contratar\",\n    \"prazo no mesmo mês\"\n  ]\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1104,
+        688
+      ],
+      "id": "aaba363a-10c0-40a6-b843-d0d15383c9ed",
+      "name": "Estruturar Análise da IA"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ai = $json.output ?? {};\nconst lead = $('Normalizar e Validar Lead').first().json;\nconst db = $('Verificar Lead no Banco').first().json;\nconst norm = (v) => (v ?? '').toString().trim().toLowerCase();\n\nlet score = 0;\nconst motivos = [];\n\nconst prazoDeclarado = norm(lead.prazo);\nconst prazoIA = norm(ai.prazo_inferido);\nif (/(imediat|hoje|agora|urgente)/.test(prazoDeclarado) || prazoIA === 'imediato') {\n  score += 30; motivos.push('prazo imediato +30');\n} else if (/(30|m[eê]s|mes|seman)/.test(prazoDeclarado) || prazoIA === '30_dias') {\n  score += 25; motivos.push('prazo até 30 dias +25');\n} else if (/(60|90|tr[eê]s meses|3 meses)/.test(prazoDeclarado) || prazoIA === '90_dias') {\n  score += 15; motivos.push('prazo até 90 dias +15');\n}\n\nconst orc = norm(lead.orcamento);\nif (['alto','high','grande'].includes(orc)) { score += 25; motivos.push('orçamento alto +25'); }\nelse if (['medio','médio','medium'].includes(orc)) { score += 15; motivos.push('orçamento médio +15'); }\nelse if (['baixo','low'].includes(orc)) { score += 5; motivos.push('orçamento baixo +5'); }\n\nconst porte = norm(lead.porte);\nif (['grande','large'].includes(porte)) { score += 15; motivos.push('empresa grande +15'); }\nelse if (['medio','médio','medium'].includes(porte)) { score += 12; motivos.push('empresa média +12'); }\nelse if (['pequeno','pequena','small'].includes(porte)) { score += 8; motivos.push('empresa pequena +8'); }\nelse if (['individual','autonomo','autônomo'].includes(porte)) { score += 5; motivos.push('profissional individual +5'); }\n\nconst intencao = norm(ai.intencao);\nif (intencao === 'contratacao') { score += 20; motivos.push('intenção de contratação +20'); }\nelse if (intencao === 'parceria') { score += 10; motivos.push('intenção de parceria +10'); }\nelse if (intencao === 'pesquisa') { score += 5; motivos.push('pesquisa comercial +5'); }\n\nif ((lead.mensagem ?? '').length >= 60) { score += 10; motivos.push('mensagem detalhada +10'); }\n\nscore = Math.min(score, 100);\nlet classificacao = 'FRIO';\nif (score >= 70) classificacao = 'QUENTE';\nelse if (score >= 40) classificacao = 'MORNO';\n\nreturn {\n  json: {\n    nome: lead.nome,\n    email: lead.email,\n    empresa: lead.empresa,\n    porte: lead.porte,\n    orcamento: lead.orcamento,\n    prazo_declarado: lead.prazo,\n    mensagem: lead.mensagem,\n    origem: lead.origem,\n    intencao: ai.intencao ?? 'outro',\n    prazo_inferido: ai.prazo_inferido ?? 'sem_prazo',\n    servico_interesse: ai.servico_interesse ?? 'outro',\n    sentimento: ai.sentimento ?? 'neutro',\n    resumo_ia: ai.resumo ?? '',\n    sinais_ia: ai.sinais ?? [],\n    score,\n    classificacao,\n    motivos_score: motivos,\n    lead_existe: (db.existe ?? 'NAO').toString().toUpperCase(),\n    lead_id: Number(db.lead_id ?? 0),\n    status_atual: db.status_atual ?? 'novo'\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        432
+      ],
+      "id": "2c5cf935-5210-4139-98af-f5ca7f508ba4",
+      "name": "Calcular Score"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "767ec57b-7ce6-40dd-8f47-0a3c062ad0dc",
+              "leftValue": "={{ $json.lead_existe }}",
+              "rightValue": "SIM",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1472,
+        432
+      ],
+      "id": "fb17cfe3-ede5-4e02-a06a-7ae555328024",
+      "name": "Lead Já Existe?"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads\nSET nome=$1, empresa=$2, porte=$3, orcamento=$4, prazo_declarado=$5,\nmensagem_original=$6, intencao=$7, servico_interesse=$8, sentimento=$9,\nresumo_ia=$10, score=$11, classificacao=$12, atualizado_em=NOW()\nWHERE id=$13\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$json.nome,$json.empresa,$json.porte,$json.orcamento,$json.prazo_declarado,$json.mensagem,$json.intencao,$json.servico_interesse,$json.sentimento,$json.resumo_ia,$json.score,$json.classificacao,$json.lead_id] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1728,
+        336
+      ],
+      "id": "6bd37808-35dd-4851-8e66-63e1ba210ff2",
+      "name": "Atualizar Lead Existente",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads (\nnome,email,empresa,porte,orcamento,prazo_declarado,mensagem_original,\nintencao,servico_interesse,sentimento,resumo_ia,score,classificacao,status\n) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'novo')\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$json.nome,$json.email,$json.empresa,$json.porte,$json.orcamento,$json.prazo_declarado,$json.mensagem,$json.intencao,$json.servico_interesse,$json.sentimento,$json.resumo_ia,$json.score,$json.classificacao] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1728,
+        528
+      ],
+      "id": "53e59c11-0902-4e8f-8aa4-b77ebf18b97d",
+      "name": "Criar Novo Lead",
+      "credentials": {
+        "postgres": {
+          "id": "seu id",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO interacoes (lead_id,mensagem,resumo_ia,score,classificacao)\nVALUES ($1,$2,$3,$4,$5)\nRETURNING id AS interacao_id, lead_id;",
+        "options": {
+          "queryReplacement": "={{ [$json.id,$('Calcular Score').item.json.mensagem,$('Calcular Score').item.json.resumo_ia,$('Calcular Score').item.json.score,$('Calcular Score').item.json.classificacao] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2000,
+        432
+      ],
+      "id": "7c9ac397-c414-4d6c-9a2b-daf75f750fab",
+      "name": "Registrar Interação",
+      "credentials": {
+        "postgres": {
+          "id": "seu id",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "4ab4f353-4c6f-46e2-9a60-fe54ea732819",
+              "leftValue": "={{ $('Calcular Score').item.json.classificacao }}",
+              "rightValue": "QUENTE",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2256,
+        432
+      ],
+      "id": "835c96d6-bd1b-44c4-b504-d2ddde534833",
+      "name": "Lead Quente?"
+    },
+    {
+      "parameters": {
+        "sendTo": "comercial@empresa.com",
+        "subject": "=[LEAD QUENTE] {{ $('Calcular Score').item.json.empresa || $('Calcular Score').item.json.nome }} — Score {{ $('Calcular Score').item.json.score }}",
+        "message": "=<h2>🔥 Novo Lead Quente Identificado</h2>\n\n<p>Um lead de alta prioridade foi identificado automaticamente pelo LeadOps.</p>\n\n<hr>\n\n<h3>Dados do Lead</h3>\n\n<p>\n<strong>Nome:</strong> {{ $('Calcular Score').item.json.nome }}<br>\n<strong>Empresa:</strong> {{ $('Calcular Score').item.json.empresa }}<br>\n<strong>E-mail:</strong> {{ $('Calcular Score').item.json.email }}\n</p>\n\n<h3>Qualificação</h3>\n\n<p>\n<strong>Score:</strong> {{ $('Calcular Score').item.json.score }}/100<br>\n<strong>Classificação:</strong> {{ $('Calcular Score').item.json.classificacao }}<br>\n<strong>Intenção:</strong> {{ $('Calcular Score').item.json.intencao }}<br>\n<strong>Serviço de interesse:</strong> {{ $('Calcular Score').item.json.servico_interesse }}<br>\n<strong>Sentimento:</strong> {{ $('Calcular Score').item.json.sentimento }}\n</p>\n\n<h3>Resumo da IA</h3>\n\n<p>{{ $('Calcular Score').item.json.resumo_ia }}</p>\n\n<h3>Composição do Score</h3>\n\n<p>{{ $('Calcular Score').item.json.motivos_score.join('<br>') }}</p>\n\n<hr>\n\n<p><strong>Próximo passo recomendado:</strong> priorizar o contato comercial e validar a oportunidade.</p>\n\n<p><em>Alerta gerado automaticamente pelo LeadOps.</em></p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2496,
+        336
+      ],
+      "id": "912bf9dc-de95-44d6-88c5-63ff677fbaea",
+      "name": "Enviar Alerta ao Comercial",
+      "webhookId": "a8dc1925-aa0e-4215-bd02-dc06bf8d2d72",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "seu id",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO logs_automacao (processo,status,detalhes) VALUES ($1,$2,$3) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ ['leadops_qualificacao','SUCESSO','lead_id=' + $('Registrar Interação').item.json.lead_id + '; score=' + $('Calcular Score').item.json.score + '; classificacao=' + $('Calcular Score').item.json.classificacao + '; email=' + $('Calcular Score').item.json.email] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2752,
+        432
+      ],
+      "id": "fee49471-3964-40a6-a297-a6c4cd269d36",
+      "name": "Registrar Log da Automação",
+      "credentials": {
+        "postgres": {
+          "id": "seu id",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'ok', lead_id: $('Registrar Interação').item.json.lead_id, score: $('Calcular Score').item.json.score, classificacao: $('Calcular Score').item.json.classificacao, resumo: $('Calcular Score').item.json.resumo_ia } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        3008,
+        432
+      ],
+      "id": "cc9fec1e-d26f-4db6-8b07-a9fe4d8e2ca9",
+      "name": "Responder Sucesso"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Setup Banco": {
+      "main": [
+        [
+          {
+            "node": "Criar Estrutura SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Receber Lead": {
+      "main": [
+        [
+          {
+            "node": "Normalizar e Validar Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar e Validar Lead": {
+      "main": [
+        [
+          {
+            "node": "Entrada Válida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Entrada Válida?": {
+      "main": [
+        [
+          {
+            "node": "Verificar Lead no Banco",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder Erro de Validação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar Lead no Banco": {
+      "main": [
+        [
+          {
+            "node": "Analisar Intenção com IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq - Modelo de IA": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Analisar Intenção com IA",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Estruturar Análise da IA": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Analisar Intenção com IA",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analisar Intenção com IA": {
+      "main": [
+        [
+          {
+            "node": "Calcular Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcular Score": {
+      "main": [
+        [
+          {
+            "node": "Lead Já Existe?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Já Existe?": {
+      "main": [
+        [
+          {
+            "node": "Atualizar Lead Existente",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Criar Novo Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Atualizar Lead Existente": {
+      "main": [
+        [
+          {
+            "node": "Registrar Interação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Criar Novo Lead": {
+      "main": [
+        [
+          {
+            "node": "Registrar Interação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar Interação": {
+      "main": [
+        [
+          {
+            "node": "Lead Quente?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Quente?": {
+      "main": [
+        [
+          {
+            "node": "Enviar Alerta ao Comercial",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Registrar Log da Automação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar Alerta ao Comercial": {
+      "main": [
+        [
+          {
+            "node": "Registrar Log da Automação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar Log da Automação": {
+      "main": [
+        [
+          {
+            "node": "Responder Sucesso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "36406ac9-7757-480f-b709-8d48dd2885f2",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "seu id"
+  },
+  "nodeGroups": [],
+  "id": "n3hgAi6OrOBZAJft",
+  "tags": []
+}
